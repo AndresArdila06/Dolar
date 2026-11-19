@@ -129,7 +129,7 @@ def escribir_tabla_estilizada(ws, df_tabla, fila_inicio, col_inicio, titulo, col
 
     for j, col_name in enumerate(df_tabla.columns):
         col_letter = get_column_letter(col_inicio + j)
-        ancho = max(11, len(str(col_name)) + 3)
+        ancho = max(14, len(str(col_name)) + 4)
         ws.column_dimensions[col_letter].width = max(ws.column_dimensions[col_letter].width or 0, ancho)
 
 
@@ -176,11 +176,29 @@ def poblar_hoja_reporte(ws, df, fecha_str, ruta_png):
         col_actual += len(tabla_df.columns) + 1
 
 
+def poblar_hoja_datos_dia(ws, df, fecha_str):
+    ws.views.sheetView[0].showGridLines = True
+    tabla_datos = df[["Hora", "Dolar"]].reset_index(drop=True)
+    escribir_tabla_estilizada(
+        ws,
+        tabla_datos,
+        fila_inicio=1,
+        col_inicio=1,
+        titulo=f"DATOS DEL DÍA DÓLAR SET-FX - {fecha_str}",
+        color_titulo="0078D4",
+    )
+    ws.freeze_panes = "A3"
+
+
 def generar_excel_diario(df, fecha_str, ruta_png, ruta_xlsx):
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Reporte_Dolar"
-    poblar_hoja_reporte(ws, df, fecha_str, ruta_png)
+    ws_rep = wb.active
+    ws_rep.title = "Reporte_Dolar"
+    poblar_hoja_reporte(ws_rep, df, fecha_str, ruta_png)
+
+    ws_datos = wb.create_sheet(title="Datos_Dia")
+    poblar_hoja_datos_dia(ws_datos, df, fecha_str)
+
     wb.save(ruta_xlsx)
 
 
@@ -197,6 +215,21 @@ def actualizar_excel_mensual(df, fecha_str, ruta_png, ruta_xlsx_mensual):
 
     poblar_hoja_reporte(ws, df, fecha_str, ruta_png)
     wb.save(ruta_xlsx_mensual)
+
+
+def actualizar_excel_datos_mensual(df, fecha_str, ruta_xlsx_datos_mensual):
+    if os.path.exists(ruta_xlsx_datos_mensual):
+        wb = load_workbook(ruta_xlsx_datos_mensual)
+        if fecha_str in wb.sheetnames:
+            del wb[fecha_str]
+        ws = wb.create_sheet(title=fecha_str)
+    else:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = fecha_str
+
+    poblar_hoja_datos_dia(ws, df, fecha_str)
+    wb.save(ruta_xlsx_datos_mensual)
 
 
 # --- INTEGRACIÓN MICROSOFT GRAPH (ONEDRIVE + CORREO) ---
@@ -283,8 +316,8 @@ def enviar_correo_graph(token, mail_from, mail_to_str, df, fecha_str, mes_nombre
 
     cuerpo_html = f"""
     <div style="font-family:Calibri,Arial,sans-serif;font-size:14px;color:#1F2937;">
-      <p>Buen día Don Hernan,</p>
-      <p>Envío adjunto el <b>Reporte Diario del Dólar SET-FX (USD/COP)</b> correspondiente al <b>{fecha_str}</b>.</p>
+      <p>Buen día,</p>
+      <p>Se envía adjunto el <b>Reporte Diario del Dólar SET-FX (USD/COP)</b> correspondiente al <b>{fecha_str}</b>.</p>
 
       <table style="border-collapse:collapse;margin:14px 0;min-width:420px;">
         <thead>
@@ -359,6 +392,7 @@ def main():
     mes_nombre = MESES_ES[ahora.month]
     fecha_str = ahora.strftime("%Y-%m-%d")
     nombre_excel_mes = f"{mes_nombre} {anio_str}.xlsx"
+    nombre_excel_datos_mes = f"Datos Dolar {mes_nombre} {anio_str}.xlsx"
 
     carpeta_anio = os.path.join(carpeta_base, "Reportes", anio_str)
     carpeta_dia = os.path.join(carpeta_anio, mes_nombre, fecha_str)
@@ -372,33 +406,41 @@ def main():
     ruta_png = os.path.join(carpeta_dia, f"Grafica-Dolar-{fecha_str}.png")
     capturar_dashboard_set_icap(ruta_png)
 
-    # 3. Excel diario (sin Datos_Crudos)
+    # 3. Excel diario (Hoja 1: Reporte_Dolar, Hoja 2: Datos_Dia con diseño)
     ruta_xlsx_dia = os.path.join(carpeta_dia, f"Reporte-Dolar-{fecha_str}.xlsx")
     generar_excel_diario(df, fecha_str, ruta_png, ruta_xlsx_dia)
 
-    # 4. Excel mensual (sincronizado con OneDrive)
+    # 4. Excels mensuales (sincronizados con OneDrive)
     ruta_xlsx_mes = os.path.join(carpeta_anio, nombre_excel_mes)
+    ruta_xlsx_datos_mes = os.path.join(carpeta_anio, nombre_excel_datos_mes)
+
     user_email = os.getenv("ONEDRIVE_USER_EMAIL")
     mail_from = os.getenv("MAIL_FROM")
     mail_to = os.getenv("MAIL_TO")
 
     token = None
     web_url = ""
-    ruta_remota = construir_ruta_onedrive(anio_str, nombre_excel_mes)
+    ruta_remota_mes = construir_ruta_onedrive(anio_str, nombre_excel_mes)
+    ruta_remota_datos_mes = construir_ruta_onedrive(anio_str, nombre_excel_datos_mes)
 
     if user_email or (mail_from and mail_to):
         token = obtener_token_graph()
 
     if token and user_email:
         if not os.path.exists(ruta_xlsx_mes):
-            descargar_mensual_si_existe(token, user_email, ruta_remota, ruta_xlsx_mes)
+            descargar_mensual_si_existe(token, user_email, ruta_remota_mes, ruta_xlsx_mes)
+        if not os.path.exists(ruta_xlsx_datos_mes):
+            descargar_mensual_si_existe(token, user_email, ruta_remota_datos_mes, ruta_xlsx_datos_mes)
 
     actualizar_excel_mensual(df, fecha_str, ruta_png, ruta_xlsx_mes)
+    actualizar_excel_datos_mensual(df, fecha_str, ruta_xlsx_datos_mes)
 
     if token and user_email:
-        subir_a_onedrive(token, user_email, ruta_remota, ruta_xlsx_mes)
+        subir_a_onedrive(token, user_email, ruta_remota_mes, ruta_xlsx_mes)
+        subir_a_onedrive(token, user_email, ruta_remota_datos_mes, ruta_xlsx_datos_mes)
         web_url = obtener_url_carpeta_onedrive(token, user_email)
-        print(f"Subido/actualizado en OneDrive: {ruta_remota}")
+        print(f"Subido/actualizado en OneDrive: {ruta_remota_mes}")
+        print(f"Subido/actualizado en OneDrive: {ruta_remota_datos_mes}")
 
     # 5. Envío de correo diario con el Excel adjunto + enlace a carpeta de OneDrive
     if token and mail_from and mail_to:
@@ -407,8 +449,9 @@ def main():
         )
         print(f"Correo enviado desde {mail_from} a {mail_to}")
 
-    print(f"Reporte diario guardado en:  {carpeta_dia}")
-    print(f"Reporte mensual actualizado: {ruta_xlsx_mes}")
+    print(f"Reporte diario guardado en:         {carpeta_dia}")
+    print(f"Reporte mensual actualizado:        {ruta_xlsx_mes}")
+    print(f"Datos mensuales del dólar:          {ruta_xlsx_datos_mes}")
 
 
 if __name__ == "__main__":
